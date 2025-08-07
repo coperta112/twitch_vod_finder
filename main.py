@@ -1,9 +1,9 @@
-# メインエントリーポイント: main.py (修正版)
+# メインエントリーポイント: main.py (修正版 - 日付指定同期機能付き)
 import streamlit as st
 import sys
 import os
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # パス設定
 sys.path.append(os.path.join(os.path.dirname(__file__), 'app'))
@@ -73,9 +73,9 @@ st.markdown("""
         position: fixed;
         top: 20px;
         right: 30px;
-        z-index: 9999 !important;  /* より高いz-indexに設定 */
+        z-index: 9999 !important;
         max-width: 200px;
-        pointer-events: auto;  /* クリックイベントを有効化 */
+        pointer-events: auto;
     }
     
     .twitch-button {
@@ -94,10 +94,10 @@ st.markdown("""
         width: 100%;
         text-align: center;
         box-sizing: border-box;
-        cursor: pointer !important;  /* カーソルを強制的にポインターに */
-        pointer-events: auto !important;  /* クリックイベントを明示的に有効化 */
-        position: relative;  /* z-indexを有効にするため */
-        z-index: 10000 !important;  /* 最上位に配置 */
+        cursor: pointer !important;
+        pointer-events: auto !important;
+        position: relative;
+        z-index: 10000 !important;
     }
     
     .twitch-button:hover {
@@ -114,7 +114,7 @@ st.markdown("""
     
     .twitch-button:active {
         color: white !important;
-        transform: translateY(0px);  /* クリック時の視覚的フィードバック */
+        transform: translateY(0px);
     }
     
     /* Streamlit要素との重複を避ける */
@@ -168,7 +168,14 @@ st.markdown("""
     }
     
     /* 更新ボタン用スタイル */
-
+    .update-section {
+        background: linear-gradient(135deg, #f8f9fa 0%, #ffffff 100%);
+        border: 1px solid #e0e0e0;
+        border-radius: 12px;
+        padding: 20px;
+        margin: 20px 0;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
     
     .stats-grid {
         display: grid;
@@ -224,6 +231,48 @@ st.markdown("""
     .status-ok { background-color: #28a745; }
     .status-warning { background-color: #ffc107; }
     .status-error { background-color: #dc3545; }
+    
+    /* 日付指定セクション用スタイル */
+    .date-range-section {
+        background: linear-gradient(135deg, #e3f2fd 0%, #f3e5f5 100%);
+        border: 1px solid #b3d9ff;
+        border-radius: 10px;
+        padding: 15px;
+        margin: 15px 0;
+    }
+    
+    .sync-mode-tabs {
+        display: flex;
+        gap: 10px;
+        margin-bottom: 15px;
+    }
+    
+    .sync-mode-tab {
+        flex: 1;
+        padding: 8px 12px;
+        border: 2px solid #ddd;
+        border-radius: 8px;
+        background: #f8f9fa;
+        cursor: pointer;
+        text-align: center;
+        transition: all 0.3s ease;
+    }
+    
+    .sync-mode-tab.active {
+        border-color: #007bff;
+        background: #007bff;
+        color: white;
+        font-weight: bold;
+    }
+    
+    .sync-mode-tab:hover {
+        border-color: #007bff;
+        background: #e7f3ff;
+    }
+    
+    .sync-mode-tab.active:hover {
+        background: #0056b3;
+    }
 </style>
 
 <script>
@@ -280,20 +329,71 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# 手動更新機能（改良版）
+# 手動更新機能（改良版 - 日付指定機能付き）
 def add_manual_update_section():
-    """手動更新セクションを追加"""
+    """手動更新セクションを追加（日付指定機能付き）"""
     
     st.markdown('<div class="update-section">', unsafe_allow_html=True)
     
     # API設定状態チェック
     config_ok, config_msg = check_api_configuration()
     
+    # セクションタイトル
+    st.markdown("### 🔄 データ更新")
+    
+    # 同期モード選択
+    sync_mode = st.radio(
+        "同期モード",
+        ["通常同期 (過去7日)", "日付指定同期"],
+        horizontal=True,
+        key="sync_mode_selector",
+        help="通常同期: 過去7日間のデータを取得\n日付指定同期: 指定した日付からのデータを取得"
+    )
+    
+    # 日付指定セクション
+    date_range_params = None
+    if sync_mode == "日付指定同期":
+        st.markdown('<div class="date-range-section">', unsafe_allow_html=True)
+        
+        col_date1, col_date2 = st.columns(2)
+        
+        with col_date1:
+            start_date = st.date_input(
+                "開始日",
+                value=datetime.now().date() - timedelta(days=30),
+                max_value=datetime.now().date(),
+                help="この日付以降のデータを取得します"
+            )
+        
+        with col_date2:
+            end_date = st.date_input(
+                "終了日",
+                value=datetime.now().date(),
+                min_value=start_date,
+                max_value=datetime.now().date(),
+                help="この日付までのデータを取得します"
+            )
+        
+        # 日付範囲の確認
+        days_diff = (end_date - start_date).days
+        if days_diff > 90:
+            st.warning("⚠️ 90日以上の期間が指定されています。API制限により、データ取得に時間がかかる可能性があります。")
+        elif days_diff <= 0:
+            st.error("❌ 開始日は終了日より前である必要があります。")
+        else:
+            st.info(f"📅 取得期間: {days_diff + 1}日間 ({start_date} ～ {end_date})")
+        
+        date_range_params = {
+            'start_date': start_date,
+            'end_date': end_date
+        }
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    # API設定状態とボタン配置
     col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
     
     with col1:
-        st.markdown("### 🔄 データ更新")
-        
         # API設定状態表示
         if config_ok:
             st.markdown('<span class="status-indicator status-ok"></span>**API設定**: 正常', unsafe_allow_html=True)
@@ -309,10 +409,15 @@ def add_manual_update_section():
         st.markdown(f'<div class="last-update">最終更新: {last_update}</div>', unsafe_allow_html=True)
     
     with col2:
-        if st.button("🔄 Twitch同期", key="manual_refresh_main", use_container_width=True, type="primary", disabled=not config_ok):
+        sync_button_text = "🔄 Twitch同期" if sync_mode == "通常同期 (過去7日)" else "📅 日付指定同期"
+        sync_disabled = not config_ok or (sync_mode == "日付指定同期" and date_range_params and (date_range_params['end_date'] - date_range_params['start_date']).days <= 0)
+        
+        if st.button(sync_button_text, key="manual_refresh_main", use_container_width=True, type="primary", disabled=sync_disabled):
             if config_ok:
-                with st.spinner("📡 Twitchからデータを同期中..."):
-                    result = refresh_data()
+                spinner_text = "📡 Twitchからデータを同期中..." if sync_mode == "通常同期 (過去7日)" else f"📅 指定期間のデータを同期中... ({date_range_params['start_date']} ～ {date_range_params['end_date']})"
+                
+                with st.spinner(spinner_text):
+                    result = refresh_data(date_range=date_range_params)
 
                 if result.get("success"):
                     st.success("✅ データを更新しました！")
@@ -535,8 +640,8 @@ st.markdown("""
 4. **編集者権限**でデータの追加・修正
 
 #### 🔄 データ更新
-- データは**Twitch API**から自動取得
-- **手動更新ボタン**で最新データを同期
+- **通常同期**: 過去7日間のデータを自動取得
+- **日付指定同期**: 指定した期間のデータを取得
 - **接続テスト**でAPI設定を確認
 - **Youtubeリンクは手動で登録してます**
 """)
@@ -556,10 +661,17 @@ with st.expander("📖 詳細操作ガイド", expanded=False):
     3. **クリップ視聴**：Clipsページで切り抜き動画を視聴
     4. **お気に入り**：気に入ったクリップを保存・管理
     
+    #### 📅 日付指定同期の使い方
+    1. **日付指定同期**を選択
+    2. **開始日**と**終了日**を設定
+    3. **日付指定同期**ボタンをクリック
+    4. 指定期間のデータが取得されます
+    
     #### ⚠️ トラブルシューティング
     - **同期エラー**：接続テストでAPI設定を確認
     - **データが古い**：手動で「Twitch同期」を実行
     - **表示異常**：「キャッシュクリア」を実行
+    - **長期間指定時**：90日以上は時間がかかる場合があります
     """)
 
 # システム状態表示
