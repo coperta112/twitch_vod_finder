@@ -1,5 +1,5 @@
 """
-修正版 update_manager.py
+修正版 update_manager.py - 日付指定同期機能付き
 既存のFlask-SQLAlchemyデータベース構造に対応
 """
 
@@ -232,8 +232,8 @@ def ensure_tables(cursor):
     # 既存テーブルにカラムを追加（必要に応じて）
     migrate_database_if_needed(cursor)
 
-def sync_twitch_data_direct():
-    """Twitch APIから直接データを同期"""
+def sync_twitch_data_direct(date_range=None):
+    """Twitch APIから直接データを同期（日付指定対応）"""
     try:
         # API設定チェック
         config_ok, config_msg = check_api_configuration()
@@ -271,13 +271,20 @@ def sync_twitch_data_direct():
         results = {
             'videos_added': 0,
             'clips_added': 0,
-            'errors': []
+            'errors': [],
+            'date_range': date_range
         }
+        
+        # 日付範囲のログ出力
+        if date_range:
+            logger.info(f"日付指定同期: {date_range['start_date']} ～ {date_range['end_date']}")
+        else:
+            logger.info("通常同期: 過去7日間")
         
         # VOD同期
         try:
             logger.info("VODデータを同期中...")
-            vod_result = sync_videos(headers, user_id, c)
+            vod_result = sync_videos(headers, user_id, c, date_range=date_range)
             results['videos_added'] = vod_result['added']
             if vod_result.get('errors'):
                 results['errors'].extend(vod_result['errors'])
@@ -289,7 +296,7 @@ def sync_twitch_data_direct():
         # クリップ同期
         try:
             logger.info("クリップデータを同期中...")
-            clip_result = sync_clips(headers, user_id, c)
+            clip_result = sync_clips(headers, user_id, c, date_range=date_range)
             results['clips_added'] = clip_result['added']
             if clip_result.get('errors'):
                 results['errors'].extend(clip_result['errors'])
@@ -303,10 +310,16 @@ def sync_twitch_data_direct():
         conn.close()
         
         # 同期ログを記録
-        record_sync_log("通常同期")
+        sync_type = "日付指定同期" if date_range else "通常同期"
+        record_sync_log(sync_type)
         
         # 結果メッセージ作成
-        result_msg = f"VOD: {results['videos_added']}件追加, クリップ: {results['clips_added']}件追加"
+        if date_range:
+            period_info = f" ({date_range['start_date']} ～ {date_range['end_date']})"
+        else:
+            period_info = " (過去7日間)"
+            
+        result_msg = f"VOD: {results['videos_added']}件追加, クリップ: {results['clips_added']}件追加{period_info}"
         if results['errors']:
             result_msg += f"\n警告: {len(results['errors'])}件のエラーが発生"
         
@@ -316,17 +329,38 @@ def sync_twitch_data_direct():
         logger.error(f"同期処理エラー: {str(e)}\n{traceback.format_exc()}")
         return {"success": False, "error": f"同期エラー: {str(e)}"}
 
-def sync_videos(headers, user_id, cursor, limit=20):
-    """VODを同期（既存のFlask-SQLAlchemy構造に対応）"""
+def sync_videos(headers, user_id, cursor, date_range=None, limit=100):
+    """VODを同期（既存のFlask-SQLAlchemy構造に対応 - 日付指定対応）"""
     try:
+        # パラメータを設定
+        params = {
+            'user_id': user_id,
+            'first': min(limit, 100)  # APIの上限は100
+        }
+        
+        # 日付範囲が指定されている場合
+        if date_range:
+            start_date = date_range['start_date']
+            end_date = date_range['end_date']
+            
+            # ISO形式に変換
+            start_iso = datetime.combine(start_date, datetime.min.time()).isoformat() + 'Z'
+            end_iso = datetime.combine(end_date, datetime.max.time()).isoformat() + 'Z'
+            
+            params['started_at'] = start_iso
+            params['ended_at'] = end_iso
+            
+            logger.info(f"VOD取得期間: {start_iso} ～ {end_iso}")
+        
         response = requests.get(
-            f'https://api.twitch.tv/helix/videos?user_id={user_id}&first={limit}',
+            'https://api.twitch.tv/helix/videos',
             headers=headers,
+            params=params,
             timeout=30
         )
         
         if response.status_code != 200:
-            return {"added": 0, "errors": [f"API エラー: {response.status_code}"]}
+            return {"added": 0, "errors": [f"VOD API エラー: {response.status_code}"]}
 
         data = response.json()
         videos = data.get('data', [])
@@ -335,7 +369,49 @@ def sync_videos(headers, user_id, cursor, limit=20):
         # テーブルのカラム情報を取得
         vods_columns = get_table_columns(cursor, 'vods')
 
-        for video in videos:
+        # ページネーション対応（日付指定時は複数ページ取得）
+        all_videos = videos.copy()
+        pagination = data.get('pagination', {})
+        
+        # 日付指定時は複数ページを取得（最大10ページまで）
+        if date_range and pagination.get('cursor') and len(videos) == limit:
+            page_count = 1
+            max_pages = 10
+            
+            while pagination.get('cursor') and page_count < max_pages:
+                params['after'] = pagination['cursor']
+                
+                logger.info(f"追加ページを取得中... (ページ {page_count + 1})")
+                
+                try:
+                    next_response = requests.get(
+                        'https://api.twitch.tv/helix/videos',
+                        headers=headers,
+                        params=params,
+                        timeout=30
+                    )
+                    
+                    if next_response.status_code == 200:
+                        next_data = next_response.json()
+                        next_videos = next_data.get('data', [])
+                        
+                        if not next_videos:
+                            break
+                            
+                        all_videos.extend(next_videos)
+                        pagination = next_data.get('pagination', {})
+                        page_count += 1
+                    else:
+                        logger.warning(f"追加ページ取得失敗: {next_response.status_code}")
+                        break
+                        
+                except Exception as e:
+                    logger.warning(f"追加ページ取得エラー: {str(e)}")
+                    break
+
+        logger.info(f"取得したVOD数: {len(all_videos)}")
+
+        for video in all_videos:
             try:
                 video_id = video.get('id')
                 if not video_id:
@@ -389,18 +465,28 @@ def sync_videos(headers, user_id, cursor, limit=20):
         return {"added": 0, "errors": [f"VOD同期エラー: {str(e)}"]}
 
 
-def sync_clips(headers, user_id, cursor, limit=20):
-    """クリップを同期（既存のFlask-SQLAlchemy構造に対応）"""
+def sync_clips(headers, user_id, cursor, date_range=None, limit=100):
+    """クリップを同期（既存のFlask-SQLAlchemy構造に対応 - 日付指定対応）"""
     try:
-        # 過去7日間のクリップを取得
-        end_time = datetime.now()
-        start_time = end_time - timedelta(days=7)
+        # 日付範囲を設定（デフォルトは過去7日間）
+        if date_range:
+            start_date = date_range['start_date']
+            end_date = date_range['end_date']
+        else:
+            end_date = datetime.now().date()
+            start_date = end_date - timedelta(days=7)
+        
+        # ISO形式に変換
+        start_iso = datetime.combine(start_date, datetime.min.time()).isoformat() + 'Z'
+        end_iso = datetime.combine(end_date, datetime.max.time()).isoformat() + 'Z'
+        
+        logger.info(f"クリップ取得期間: {start_iso} ～ {end_iso}")
         
         params = {
             'broadcaster_id': user_id,
-            'first': limit,
-            'started_at': start_time.strftime('%Y-%m-%dT%H:%M:%SZ'),
-            'ended_at': end_time.strftime('%Y-%m-%dT%H:%M:%SZ')
+            'first': min(limit, 100),  # APIの上限は100
+            'started_at': start_iso,
+            'ended_at': end_iso
         }
         
         response = requests.get(
@@ -420,7 +506,49 @@ def sync_clips(headers, user_id, cursor, limit=20):
         # テーブルのカラム情報を取得
         clips_columns = get_table_columns(cursor, 'clips')
         
-        for clip in clips:
+        # ページネーション対応（日付指定時は複数ページ取得）
+        all_clips = clips.copy()
+        pagination = data.get('pagination', {})
+        
+        # 日付指定時は複数ページを取得（最大10ページまで）
+        if date_range and pagination.get('cursor') and len(clips) == limit:
+            page_count = 1
+            max_pages = 10
+            
+            while pagination.get('cursor') and page_count < max_pages:
+                params['after'] = pagination['cursor']
+                
+                logger.info(f"クリップの追加ページを取得中... (ページ {page_count + 1})")
+                
+                try:
+                    next_response = requests.get(
+                        'https://api.twitch.tv/helix/clips',
+                        headers=headers,
+                        params=params,
+                        timeout=30
+                    )
+                    
+                    if next_response.status_code == 200:
+                        next_data = next_response.json()
+                        next_clips = next_data.get('data', [])
+                        
+                        if not next_clips:
+                            break
+                            
+                        all_clips.extend(next_clips)
+                        pagination = next_data.get('pagination', {})
+                        page_count += 1
+                    else:
+                        logger.warning(f"クリップ追加ページ取得失敗: {next_response.status_code}")
+                        break
+                        
+                except Exception as e:
+                    logger.warning(f"クリップ追加ページ取得エラー: {str(e)}")
+                    break
+
+        logger.info(f"取得したクリップ数: {len(all_clips)}")
+        
+        for clip in all_clips:
             try:
                 # 既存チェック（twitch_idで確認）
                 cursor.execute("SELECT id FROM clips WHERE twitch_id = ?", (clip['id'],))
@@ -497,13 +625,16 @@ def record_sync_log(sync_type):
     except Exception as e:
         logger.error(f"同期ログエラー: {str(e)}")
 
-def refresh_data():
-    """データを更新（メイン関数）"""
+def refresh_data(date_range=None):
+    """データを更新（メイン関数 - 日付指定対応）"""
     try:
-        logger.info("データ更新を開始します...")
+        if date_range:
+            logger.info(f"日付指定データ更新を開始します: {date_range['start_date']} ～ {date_range['end_date']}")
+        else:
+            logger.info("通常データ更新を開始します...")
         
         # 直接同期を実行
-        sync_result = sync_twitch_data_direct()
+        sync_result = sync_twitch_data_direct(date_range=date_range)
         
         # キャッシュをクリア
         clear_cache()
@@ -658,7 +789,7 @@ def show_config_guide():
     """)
 
 def add_sidebar_sync_controls():
-    """サイドバーに同期コントロールを追加"""
+    """サイドバーに同期コントロールを追加（日付指定機能付き）"""
     with st.sidebar:
         st.markdown("---")
         st.markdown("### 🔄 Twitch同期")
@@ -675,6 +806,42 @@ def add_sidebar_sync_controls():
             if st.button("🔧 設定ガイド", key="sidebar_config_guide"):
                 show_config_guide()
         
+        # 同期モード選択（サイドバー版）
+        sync_mode_sidebar = st.radio(
+            "同期モード",
+            ["通常同期", "日付指定"],
+            key="sidebar_sync_mode",
+            help="通常: 過去7日 / 日付指定: 期間指定"
+        )
+        
+        # 日付指定セクション（サイドバー版）
+        date_range_params_sidebar = None
+        if sync_mode_sidebar == "日付指定":
+            start_date_sidebar = st.date_input(
+                "開始日",
+                value=datetime.now().date() - timedelta(days=14),
+                max_value=datetime.now().date(),
+                key="sidebar_start_date"
+            )
+            
+            end_date_sidebar = st.date_input(
+                "終了日", 
+                value=datetime.now().date(),
+                min_value=start_date_sidebar,
+                max_value=datetime.now().date(),
+                key="sidebar_end_date"
+            )
+            
+            days_diff_sidebar = (end_date_sidebar - start_date_sidebar).days
+            if days_diff_sidebar > 0:
+                st.caption(f"📅 {days_diff_sidebar + 1}日間")
+                date_range_params_sidebar = {
+                    'start_date': start_date_sidebar,
+                    'end_date': end_date_sidebar
+                }
+            else:
+                st.error("❌ 無効な期間")
+        
         # 最終更新時刻の表示
         if "last_refresh_time" not in st.session_state:
             st.session_state.last_refresh_time = datetime.now()
@@ -682,11 +849,16 @@ def add_sidebar_sync_controls():
         last_update = st.session_state.last_refresh_time.strftime('%H:%M:%S')
         st.caption(f"最終実行: {last_update}")
         
-        # 同期ボタン
-        if st.button("🔄 データ同期", key="sidebar_sync", use_container_width=True):
+        # 同期ボタン（サイドバー版）
+        sync_button_text_sidebar = "🔄 データ同期" if sync_mode_sidebar == "通常同期" else "📅 日付同期"
+        sync_disabled_sidebar = not config_ok or (sync_mode_sidebar == "日付指定" and not date_range_params_sidebar)
+        
+        if st.button(sync_button_text_sidebar, key="sidebar_sync", use_container_width=True, disabled=sync_disabled_sidebar):
             if config_ok:
-                with st.spinner("📡 Twitchから同期中..."):
-                    result = refresh_data()
+                spinner_text_sidebar = "📡 Twitchから同期中..." if sync_mode_sidebar == "通常同期" else f"📅 指定期間を同期中..."
+                
+                with st.spinner(spinner_text_sidebar):
+                    result = refresh_data(date_range=date_range_params_sidebar)
                 
                 if result["success"]:
                     st.success("✅ 同期完了")
