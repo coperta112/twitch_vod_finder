@@ -1,4 +1,4 @@
-# pages/1_videos.py (ページネーション対応版)
+# pages/1_videos.py (YouTube Live サムネイル対応版)
 
 import streamlit as st
 import sqlite3
@@ -6,6 +6,8 @@ from datetime import datetime
 import sys, os
 import re
 import math
+import requests
+from urllib.parse import urlparse
 
 # ページ設定 - デフォルトサイドバーを無効化
 st.set_page_config(
@@ -17,7 +19,7 @@ st.set_page_config(
 
 # 共通関数: YouTubeのvideo_idを抽出
 def extract_youtube_video_id(url):
-    """YouTubeのURLからvideo_idを抽出する改良版"""
+    """YouTubeのURLからvideo_idを抽出する改良版（ライブURL対応）"""
     if not url:
         return None
     
@@ -36,7 +38,144 @@ def extract_youtube_video_id(url):
     if match:
         return match.group(1)
     
+    # パターン4: https://www.youtube.com/live/VIDEO_ID (ライブ配信URL)
+    match = re.search(r'(?:youtube\.com/live/)([a-zA-Z0-9_-]{11})', url)
+    if match:
+        return match.group(1)
+    
     return None
+
+def is_youtube_live_url(url):
+    """YouTubeのURLがライブ配信形式かを判定"""
+    if not url:
+        return False
+    
+    # ライブ配信の典型的なURLパターン
+    live_patterns = [
+        r'youtube\.com/live/',                    # https://www.youtube.com/live/VIDEO_ID
+        r'youtube\.com/watch\?.*live_stream',     # ライブストリーム関連パラメータ
+        r'youtube\.com/channel/.*/live',          # チャンネルライブページ
+    ]
+    
+    for pattern in live_patterns:
+        if re.search(pattern, url):
+            return True
+    
+    return False
+
+# YouTubeサムネイル取得の改良版関数
+def get_youtube_thumbnail_urls(video_id):
+    """
+    YouTubeビデオIDから利用可能なサムネイルURLのリストを返す
+    ライブ配信やプレミア公開にも対応した多段階フォールバック
+    """
+    if not video_id:
+        return []
+    
+    thumbnail_urls = [
+        # 高解像度サムネイル（通常動画用）
+        f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg",  # 1920x1080
+        f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg",      # 480x360
+        f"https://img.youtube.com/vi/{video_id}/mqdefault.jpg",      # 320x180
+        
+        # ライブ配信・プレミア公開用の追加パターン
+        f"https://img.youtube.com/vi/{video_id}/sddefault.jpg",      # 640x480
+        f"https://img.youtube.com/vi/{video_id}/hq720.jpg",          # 720p (一部動画)
+        
+        # 番号付きサムネイル（複数のサムネイルがある場合）
+        f"https://img.youtube.com/vi/{video_id}/1.jpg",              # サムネイル1
+        f"https://img.youtube.com/vi/{video_id}/2.jpg",              # サムネイル2
+        f"https://img.youtube.com/vi/{video_id}/3.jpg",              # サムネイル3
+        
+        # 最後の手段
+        f"https://img.youtube.com/vi/{video_id}/default.jpg"         # 120x90 (必ず存在)
+    ]
+    
+    return thumbnail_urls
+
+def check_thumbnail_exists(url):
+    """
+    サムネイルURLが有効かチェック（改良版）
+    """
+    try:
+        response = requests.head(url, timeout=5, headers={
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        })
+        return response.status_code == 200 and 'image' in response.headers.get('content-type', '')
+    except:
+        return False
+
+# 簡易版サムネイル表示（デバッグ用）
+def display_simple_thumbnail(video_id, key=None):
+    """
+    シンプルなサムネイル表示（デバッグ用）
+    """
+    if not video_id:
+        st.error("❌ Video ID が見つかりません")
+        return
+    
+    # 基本的なサムネイルURLを試行
+    urls_to_try = [
+        f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg",
+        f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg", 
+        f"https://img.youtube.com/vi/{video_id}/mqdefault.jpg",
+        f"https://img.youtube.com/vi/{video_id}/default.jpg"
+    ]
+    
+    st.write(f"🔍 Debug: Video ID = {video_id}")
+    
+    for i, url in enumerate(urls_to_try):
+        st.write(f"📸 試行 {i+1}: {url}")
+        try:
+            st.image(url, use_container_width=True, caption=f"URL {i+1}")
+            st.success(f"✅ 成功: {url}")
+            return  # 最初に成功したものを表示して終了
+        except Exception as e:
+            st.warning(f"❌ 失敗: {str(e)}")
+    
+    st.error("❌ すべてのサムネイルURLが失敗しました")
+
+# サムネイル表示用の改良された関数
+def display_thumbnail_with_fallback(video_id, key=None):
+    """
+    Streamlit互換のフォールバック機能付きサムネイル表示（高さ統一版）
+    """
+    if not video_id:
+        st.markdown('<div class="thumbnail-placeholder">📺 <br><i>サムネイル画像なし</i></div>', unsafe_allow_html=True)
+        return
+    
+    thumbnail_urls = get_youtube_thumbnail_urls(video_id)
+    
+    # 最初に利用可能なサムネイルを見つける
+    working_url = None
+    for url in thumbnail_urls:
+        try:
+            # HEADリクエストで画像の存在を確認（タイムアウト短縮）
+            response = requests.head(url, timeout=3)
+            if response.status_code == 200:
+                # Content-Typeが画像かチェック
+                content_type = response.headers.get('content-type', '')
+                if 'image' in content_type:
+                    working_url = url
+                    break
+        except:
+            continue
+    
+    # 利用可能なサムネイルを表示（高さ統一）
+    if working_url:
+        # HTMLで高さを統一して表示
+        st.markdown(f'''
+        <div class="thumbnail-container">
+            <img 
+                src="{working_url}"
+                class="thumbnail-image"
+                alt="YouTube Thumbnail"
+            />
+        </div>
+        ''', unsafe_allow_html=True)
+    else:
+        # すべてのURLが失敗した場合
+        st.markdown('<div class="thumbnail-placeholder">📺 <br><i>サムネイル読み込みエラー<br>または未対応の動画形式</i></div>', unsafe_allow_html=True)
 
 # データベース修復関数
 def fix_youtube_video_ids():
@@ -107,7 +246,12 @@ def get_vods_with_pagination(search_query="", selected_category="すべて", dat
             LIMIT 1) as youtube_video_id,
            (SELECT COUNT(*) 
             FROM clips c 
-            WHERE c.vod_id = v.id) as clip_count
+            WHERE c.vod_id = v.id) as clip_count,
+           (SELECT yl.url 
+            FROM youtube_links yl 
+            WHERE yl.vod_id = v.id 
+            ORDER BY yl.id ASC 
+            LIMIT 1) as youtube_url
     FROM vods v
     """
     
@@ -222,6 +366,58 @@ st.markdown("""
         font-size: 10px;
     }
     
+    /* ライブ配信インジケーター */
+    .live-indicator {
+        display: inline-block;
+        background-color: #ff0000;
+        color: white;
+        padding: 2px 6px;
+        margin: 1px 2px 1px 0;
+        border-radius: 3px;
+        font-size: 10px;
+        font-weight: bold;
+        animation: pulse 2s infinite;
+    }
+    
+    @keyframes pulse {
+        0% { opacity: 1; }
+        50% { opacity: 0.7; }
+        100% { opacity: 1; }
+    }
+    
+    /* サムネイルコンテナの改良（高さ統一版） */
+    .thumbnail-container {
+        width: 100%;
+        height: 210px;
+        position: relative;
+        overflow: hidden;
+        border-radius: 4px;
+        background-color: #f8f9fa;
+        margin-bottom: 8px;
+    }
+    
+    .thumbnail-image {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
+        transition: opacity 0.3s ease;
+    }
+    
+    .thumbnail-image:hover {
+        opacity: 0.9;
+    }
+    
+    /* Streamlitデフォルトの画像コンテナを調整 */
+    .stImage > div {
+        height: 210px !important;
+    }
+    
+    .stImage img {
+        height: 210px !important;
+        object-fit: cover !important;
+    }
+    
     /* ページネーションのスタイル */
     .pagination-container {
         display: flex;
@@ -264,6 +460,7 @@ st.markdown("""
     }
     
     .thumbnail-placeholder {
+        width: 100%;
         height: 210px;
         background-color: #f0f0f0;
         display: flex;
@@ -274,6 +471,8 @@ st.markdown("""
         color: #666;
         font-size: 14px;
         margin-bottom: 8px;
+        text-align: center;
+        line-height: 1.4;
     }
     
     .fix-button {
@@ -483,30 +682,26 @@ else:
     cols = st.columns(4)
     
     for idx, row in enumerate(rows):
-        vid, title, category, created_at, youtube_video_id, clip_count = row
+        vid, title, category, created_at, youtube_video_id, clip_count, youtube_url = row
+        
+        # タイトルを適切な長さに制限
+        display_title = title if len(title) <= 45 else title[:45] + "..."
         
         with cols[idx % 4]:
-            # サムネイル画像を最初に表示（高さ統一版）
-            if youtube_video_id:
-                try:
-                    # 高解像度サムネイルを優先、フォールバックも設定
-                    thumbnail_url = f"https://img.youtube.com/vi/{youtube_video_id}/maxresdefault.jpg"
-                    st.image(thumbnail_url, use_container_width=True)
-                except Exception as e:
-                    # 高解像度がない場合は標準解像度を試行
-                    try:
-                        fallback_url = f"https://img.youtube.com/vi/{youtube_video_id}/mqdefault.jpg"
-                        st.image(fallback_url, use_container_width=True)
-                    except:
-                        st.markdown('<div class="thumbnail-placeholder">📺 <br><i>サムネイル読み込みエラー</i></div>', unsafe_allow_html=True)
-            else:
-                # YouTube動画IDがない場合のプレースホルダー
-                st.markdown('<div class="thumbnail-placeholder">📺 <br><i>サムネイル画像なし</i></div>', unsafe_allow_html=True)
+            # # デバッグモード（管理者のみ）
+            # if st.session_state.is_admin:
+            #     with st.expander(f"🔧 Debug: {display_title}", expanded=False):
+            #         st.write(f"**Video ID:** {youtube_video_id}")
+            #         st.write(f"**YouTube URL:** {youtube_url}")
+            #         st.write(f"**Is Live:** {is_youtube_live_url(youtube_url) if youtube_url else False}")
+            #         if youtube_video_id:
+            #             if st.button(f"サムネイルテスト", key=f"debug_{vid}_{idx}"):
+            #                 display_simple_thumbnail(youtube_video_id, key=f"debug_vid_{vid}")
+            
+            # 改良されたサムネイル表示
+            display_thumbnail_with_fallback(youtube_video_id, key=f"vid_{vid}_{idx}")
             
             # カードのHTMLを作成（サムネイル下部）
-            # タイトルを適切な長さに制限
-            display_title = title if len(title) <= 45 else title[:45] + "..."
-            
             card_html = f"""
             <div class="vod-card">
                 <div class="vod-title">{display_title}</div>
@@ -514,14 +709,27 @@ else:
                 <div class="vod-meta">✂️ クリップ: {clip_count}件</div>
             """
             
-            # カテゴリタグの表示（最大2つまで）
-            if category:
-                tags = [tag.strip() for tag in category.split("|") if tag.strip()]
+            # ライブ配信の判定（URLパターンで判定）
+            is_live = is_youtube_live_url(youtube_url) if youtube_url else False
+            
+            # タグ表示部分（LIVEインジケーターとゲームタグを同じ行に）
+            if category or is_live:
                 card_html += '<div class="vod-tags">'
-                for tag in tags[:2]:  # 最大2つのタグのみ表示
-                    card_html += f'<span class="vod-tag">🎮 {tag}</span>'
-                if len(tags) > 2:
-                    card_html += f'<span class="vod-tag">+{len(tags)-2}</span>'
+                
+                # LIVEインジケーターを最初に表示
+                if is_live:
+                    card_html += '<span class="live-indicator">🔴 LIVE</span>'
+                
+                # カテゴリタグの表示
+                if category:
+                    tags = [tag.strip() for tag in category.split("|") if tag.strip()]
+                    # LIVEがある場合は1つ、ない場合は2つまで表示
+                    max_tags = 1 if is_live else 2
+                    for tag in tags[:max_tags]:
+                        card_html += f'<span class="vod-tag">🎮 {tag}</span>'
+                    if len(tags) > max_tags:
+                        card_html += f'<span class="vod-tag">+{len(tags)-max_tags}</span>'
+                
                 card_html += '</div>'
             
             card_html += "</div>"

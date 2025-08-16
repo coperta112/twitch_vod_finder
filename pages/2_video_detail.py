@@ -6,6 +6,8 @@ import sys
 import os
 from datetime import datetime
 import uuid
+import re
+import requests
 
 # ページ設定 - デフォルトサイドバーを無効化
 st.set_page_config(
@@ -14,6 +16,124 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="collapsed"
 )
+
+# 共通関数: YouTubeのvideo_idを抽出
+def extract_youtube_video_id(url):
+    """YouTubeのURLからvideo_idを抽出する改良版（ライブURL対応）"""
+    if not url:
+        return None
+    
+    # パターン1: https://www.youtube.com/watch?v=VIDEO_ID
+    match = re.search(r'(?:youtube\.com/watch\?v=)([a-zA-Z0-9_-]{11})', url)
+    if match:
+        return match.group(1)
+    
+    # パターン2: https://youtu.be/VIDEO_ID
+    match = re.search(r'(?:youtu\.be/)([a-zA-Z0-9_-]{11})', url)
+    if match:
+        return match.group(1)
+    
+    # パターン3: https://www.youtube.com/embed/VIDEO_ID
+    match = re.search(r'(?:youtube\.com/embed/)([a-zA-Z0-9_-]{11})', url)
+    if match:
+        return match.group(1)
+    
+    # パターン4: https://www.youtube.com/live/VIDEO_ID (ライブ配信URL)
+    match = re.search(r'(?:youtube\.com/live/)([a-zA-Z0-9_-]{11})', url)
+    if match:
+        return match.group(1)
+    
+    return None
+
+def is_youtube_live_url(url):
+    """YouTubeのURLがライブ配信形式かを判定"""
+    if not url:
+        return False
+    
+    # ライブ配信の典型的なURLパターン
+    live_patterns = [
+        r'youtube\.com/live/',                    # https://www.youtube.com/live/VIDEO_ID
+        r'youtube\.com/watch\?.*live_stream',     # ライブストリーム関連パラメータ
+        r'youtube\.com/channel/.*/live',          # チャンネルライブページ
+    ]
+    
+    for pattern in live_patterns:
+        if re.search(pattern, url):
+            return True
+    
+    return False
+
+# YouTubeサムネイル取得の改良版関数
+def get_youtube_thumbnail_urls(video_id):
+    """
+    YouTubeビデオIDから利用可能なサムネイルURLのリストを返す
+    ライブ配信やプレミア公開にも対応した多段階フォールバック
+    """
+    if not video_id:
+        return []
+    
+    thumbnail_urls = [
+        # 高解像度サムネイル（通常動画用）
+        f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg",  # 1920x1080
+        f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg",      # 480x360
+        f"https://img.youtube.com/vi/{video_id}/mqdefault.jpg",      # 320x180
+        
+        # ライブ配信・プレミア公開用の追加パターン
+        f"https://img.youtube.com/vi/{video_id}/sddefault.jpg",      # 640x480
+        f"https://img.youtube.com/vi/{video_id}/hq720.jpg",          # 720p (一部動画)
+        
+        # 番号付きサムネイル（複数のサムネイルがある場合）
+        f"https://img.youtube.com/vi/{video_id}/1.jpg",              # サムネイル1
+        f"https://img.youtube.com/vi/{video_id}/2.jpg",              # サムネイル2
+        f"https://img.youtube.com/vi/{video_id}/3.jpg",              # サムネイル3
+        
+        # 最後の手段
+        f"https://img.youtube.com/vi/{video_id}/default.jpg"         # 120x90 (必ず存在)
+    ]
+    
+    return thumbnail_urls
+
+# サムネイル表示用の改良された関数
+def display_thumbnail_with_fallback(video_id, key=None, container_class="thumbnail-container"):
+    """
+    Streamlit互換のフォールバック機能付きサムネイル表示
+    """
+    if not video_id:
+        st.markdown(f'<div class="{container_class}"><div class="no-thumbnail">📺 サムネイル画像なし</div></div>', unsafe_allow_html=True)
+        return
+    
+    thumbnail_urls = get_youtube_thumbnail_urls(video_id)
+    
+    # 最初に利用可能なサムネイルを見つける
+    working_url = None
+    for url in thumbnail_urls:
+        try:
+            # HEADリクエストで画像の存在を確認（タイムアウト短縮）
+            response = requests.head(url, timeout=3)
+            if response.status_code == 200:
+                # Content-Typeが画像かチェック
+                content_type = response.headers.get('content-type', '')
+                if 'image' in content_type:
+                    working_url = url
+                    break
+        except:
+            continue
+    
+    # 利用可能なサムネイルを表示
+    if working_url:
+        # HTMLで高さを統一して表示
+        st.markdown(f'''
+        <div class="{container_class}">
+            <img 
+                src="{working_url}"
+                alt="YouTube Thumbnail"
+                style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover;"
+            />
+        </div>
+        ''', unsafe_allow_html=True)
+    else:
+        # すべてのURLが失敗した場合
+        st.markdown(f'<div class="{container_class}"><div class="no-thumbnail">📺 サムネイル読み込みエラー<br>または未対応の動画形式</div></div>', unsafe_allow_html=True)
 
 # 修正されたCSS部分 - クリップレイアウトを横並びに変更
 st.markdown("""
@@ -36,7 +156,7 @@ st.markdown("""
         padding-top: 0 !important;
     }
     
-    /* サムネイルコンテナ */
+    /* サムネイルコンテナ - 詳細ページ用（大きめ） */
     .thumbnail-container {
         position: relative;
         width: 100%;
@@ -57,6 +177,7 @@ st.markdown("""
         object-fit: cover;
     }
     
+    /* サムネイルがない場合の表示 */
     .no-thumbnail {
         position: absolute;
         top: 0;
@@ -71,6 +192,44 @@ st.markdown("""
         border: 2px dashed #ccc;
         color: #666;
         font-size: 18px;
+        text-align: center;
+        line-height: 1.4;
+    }
+    
+    /* クリップサムネイル用（小さめ） */
+    .clip-thumbnail-container {
+        position: relative;
+        width: 200px;
+        height: 112px;
+        overflow: hidden;
+        border-radius: 8px;
+        background-color: #f0f0f0;
+        flex-shrink: 0;
+        border: 1px solid #ddd;
+    }
+    
+    .clip-thumbnail-container img {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+    }
+    
+    .clip-thumbnail-container .no-thumbnail {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background-color: #f0f0f0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: #666;
+        font-size: 16px;
+        border-radius: 8px;
     }
     
     /* ビデオ情報 */
@@ -101,6 +260,25 @@ st.markdown("""
         border-radius: 20px;
         font-size: 14px;
         font-weight: 500;
+    }
+    
+    /* ライブ配信インジケーター（詳細ページ用） */
+    .live-indicator-large {
+        display: inline-block;
+        background-color: #ff0000;
+        color: white;
+        padding: 8px 16px;
+        margin: 4px 8px 4px 0;
+        border-radius: 20px;
+        font-size: 14px;
+        font-weight: bold;
+        animation: pulse 2s infinite;
+    }
+    
+    @keyframes pulse {
+        0% { opacity: 1; }
+        50% { opacity: 0.7; }
+        100% { opacity: 1; }
     }
     
     /* YouTubeリンク */
@@ -158,27 +336,6 @@ st.markdown("""
         right: 0;
         height: 2px;
         background: linear-gradient(90deg, #8fbc8f, #8fbc8f);
-    }
-    
-    .clip-thumbnail {
-        width: 200px;
-        height: 112px;
-        background-color: #f0f0f0;
-        border-radius: 8px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        color: #666;
-        font-size: 16px;
-        border: 1px solid #ddd;
-        overflow: hidden;
-        flex-shrink: 0;
-    }
-    
-    .clip-thumbnail img {
-        width: 100%;
-        height: 100%;
-        object-fit: cover;
     }
     
     .clip-info {
@@ -313,16 +470,39 @@ if not vod:
 
 vod_id, title, category, created_at = vod
 
+# YouTubeリンクを取得（video_idも含む）
 c.execute("SELECT id, url, title, video_id FROM youtube_links WHERE vod_id = ? ORDER BY id", (vod_id,))
 youtube_links = c.fetchall()
 
-thumbnail_url = None
+# 最初のvideo_idを取得（サムネイル表示用）
+main_video_id = None
+main_youtube_url = None
 for link in youtube_links:
-    if link[3]:
-        thumbnail_url = f"https://img.youtube.com/vi/{link[3]}/maxresdefault.jpg"
+    if link[3]:  # video_idが存在する場合
+        main_video_id = link[3]
+        main_youtube_url = link[1]
         break
 
-c.execute("SELECT id, title, created_at, thumbnail_url, (SELECT yl.video_id FROM youtube_links yl WHERE yl.vod_id = clips.vod_id AND yl.video_id IS NOT NULL LIMIT 1) as youtube_video_id FROM clips WHERE vod_id = ? ORDER BY created_at DESC", (vod_id,))
+# video_idが存在しない場合、URLから抽出を試行
+if not main_video_id and youtube_links:
+    for link in youtube_links:
+        extracted_id = extract_youtube_video_id(link[1])
+        if extracted_id:
+            main_video_id = extracted_id
+            main_youtube_url = link[1]
+            # データベースも更新
+            c.execute("UPDATE youtube_links SET video_id = ? WHERE id = ?", (extracted_id, link[0]))
+            conn.commit()
+            break
+
+# クリップ情報を取得
+c.execute("""
+    SELECT id, title, created_at, thumbnail_url, 
+           (SELECT yl.video_id FROM youtube_links yl WHERE yl.vod_id = clips.vod_id AND yl.video_id IS NOT NULL LIMIT 1) as youtube_video_id 
+    FROM clips 
+    WHERE vod_id = ? 
+    ORDER BY created_at DESC
+""", (vod_id,))
 clips = c.fetchall()
 
 conn.close()  # 一旦閉じる（必要時再接続）
@@ -415,11 +595,7 @@ if st.session_state.is_admin and st.session_state.edit_mode:
             
             if st.form_submit_button("🔗 リンクを追加"):
                 if new_url:
-                    video_id = None
-                    if "youtube.com/watch?v=" in new_url:
-                        video_id = new_url.split("watch?v=")[1].split("&")[0]
-                    elif "youtu.be/" in new_url:
-                        video_id = new_url.split("youtu.be/")[1].split("?")[0]
+                    video_id = extract_youtube_video_id(new_url)
                     
                     conn = sqlite3.connect("vods.db", check_same_thread=False)
                     c = conn.cursor()
@@ -470,31 +646,8 @@ else:
     col1, col2 = st.columns([3, 2])
     
     with col1:
-        # サムネイル表示を修正
-        if thumbnail_url:
-            st.image(
-                thumbnail_url, 
-                use_container_width=True
-            )
-        else:
-            # サムネイルがない場合の表示
-            st.markdown("""
-            <div style="
-                width: 100%;
-                height: 300px;
-                background-color: #f0f0f0;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                border-radius: 12px;
-                border: 2px dashed #ccc;
-                color: #666;
-                font-size: 18px;
-                margin-bottom: 16px;
-            ">
-                📺 サムネイル画像なし
-            </div>
-            """, unsafe_allow_html=True)
+        # 改良されたサムネイル表示
+        display_thumbnail_with_fallback(main_video_id, key=f"main_vid_{vod_id}")
         
         st.markdown(f'<div class="video-title">📺 {title}</div>', unsafe_allow_html=True)
         st.markdown(f'<div class="video-date">📅 追加日: {created_at}</div>', unsafe_allow_html=True)
@@ -506,15 +659,23 @@ else:
                 st.markdown(f'<a href="{url}" target="_blank" class="youtube-link">▶️ {link_label}</a>', unsafe_allow_html=True)
             st.markdown('</div>', unsafe_allow_html=True)
         
-        if category:
-            tags = [tag.strip() for tag in category.split("|") if tag.strip()]
-            if tags:
-                st.markdown('<div class="video-tags">', unsafe_allow_html=True)
+        # カテゴリタグとライブインジケーターの表示
+        if category or (main_youtube_url and is_youtube_live_url(main_youtube_url)):
+            st.markdown('<div class="video-tags">', unsafe_allow_html=True)
+            
+            # ライブ配信インジケーター
+            if main_youtube_url and is_youtube_live_url(main_youtube_url):
+                st.markdown('<span class="live-indicator-large">🔴 LIVE配信</span>', unsafe_allow_html=True)
+            
+            # カテゴリタグ
+            if category:
+                tags = [tag.strip() for tag in category.split("|") if tag.strip()]
                 tags_html = ""
                 for tag in tags:
                     tags_html += f'<span class="video-tag">🎮 {tag}</span>'
                 st.markdown(tags_html, unsafe_allow_html=True)
-                st.markdown('</div>', unsafe_allow_html=True)
+            
+            st.markdown('</div>', unsafe_allow_html=True)
     
     with col2:
         st.markdown('<div class="clips-section">', unsafe_allow_html=True)
@@ -535,29 +696,31 @@ else:
                 col_thumb, col_info = st.columns([1, 2])
                 
                 with col_thumb:
-                    # サムネイル表示
+                    # クリップサムネイル表示（改良版）
+                    clip_video_id = None
+                    
+                    # クリップのサムネイルURLまたはvideo_idを決定
                     if clip_thumbnail_url and clip_thumbnail_url.strip():
-                        st.image(clip_thumbnail_url, use_container_width=True)
-                    elif clip_youtube_video_id and clip_youtube_video_id.strip():
-                        youtube_thumbnail = f"https://img.youtube.com/vi/{clip_youtube_video_id}/mqdefault.jpg"
-                        st.image(youtube_thumbnail, use_container_width=True)
-                    else:
-                        st.markdown("""
-                        <div style="
-                            width: 100%;
-                            height: 112px;
-                            background-color: #f0f0f0;
-                            display: flex;
-                            align-items: center;
-                            justify-content: center;
-                            border-radius: 8px;
-                            border: 1px solid #ddd;
-                            color: #666;
-                            font-size: 16px;
-                        ">
-                            📹
+                        # カスタムサムネイルがある場合はそれを使用
+                        st.markdown(f'''
+                        <div class="clip-thumbnail-container">
+                            <img src="{clip_thumbnail_url}" alt="Clip Thumbnail" />
                         </div>
-                        """, unsafe_allow_html=True)
+                        ''', unsafe_allow_html=True)
+                    elif clip_youtube_video_id and clip_youtube_video_id.strip():
+                        # YouTubeのvideo_idがある場合はYouTubeサムネイルを使用
+                        clip_video_id = clip_youtube_video_id
+                        display_thumbnail_with_fallback(clip_video_id, key=f"clip_{clip_id}", container_class="clip-thumbnail-container")
+                    elif main_video_id:
+                        # メインのvideo_idを使用してYouTubeサムネイルを表示
+                        display_thumbnail_with_fallback(main_video_id, key=f"clip_main_{clip_id}", container_class="clip-thumbnail-container")
+                    else:
+                        # サムネイルがない場合
+                        st.markdown('''
+                        <div class="clip-thumbnail-container">
+                            <div class="no-thumbnail">📹</div>
+                        </div>
+                        ''', unsafe_allow_html=True)
                 
                 with col_info:
                     # タイトル
