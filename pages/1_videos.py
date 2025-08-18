@@ -45,6 +45,16 @@ def extract_youtube_video_id(url):
     
     return None
 
+def get_platform_info(youtube_url, twitch_url):
+    """URLからプラットフォーム情報を取得"""
+    platforms = []
+    
+    # ニコニコ動画の判定（Twitch URLフィールドにniconicoが入力されている場合）
+    if twitch_url and 'niconico' in twitch_url.lower():
+        platforms.append(('niconico', '📹 ニコニコ'))
+    
+    return platforms
+
 def is_youtube_live_url(url):
     """YouTubeのURLがライブ配信形式かを判定"""
     if not url:
@@ -227,14 +237,14 @@ def fix_vod_clip_linking():
     conn.close()
     return linked_count
 
-# ページネーション用のデータ取得関数
+# ページネーション用のデータ取得関数（修正版）
 def get_vods_with_pagination(search_query="", selected_category="すべて", date_filter=None, 
                             page=1, items_per_page=20):
-    """ページネーション対応でVODを取得"""
+    """ページネーション対応でVODを取得（Twitch URLも取得）"""
     conn = sqlite3.connect("vods.db", check_same_thread=False)
     c = conn.cursor()
     
-    # 基本クエリ
+    # 基本クエリ（Twitch URLも取得）
     base_query = """
     SELECT v.id, v.title, v.category, v.created_at, 
            (SELECT yl.video_id 
@@ -251,7 +261,8 @@ def get_vods_with_pagination(search_query="", selected_category="すべて", dat
             FROM youtube_links yl 
             WHERE yl.vod_id = v.id 
             ORDER BY yl.id ASC 
-            LIMIT 1) as youtube_url
+            LIMIT 1) as youtube_url,
+           v.url as twitch_url
     FROM vods v
     """
     
@@ -366,8 +377,8 @@ st.markdown("""
         font-size: 10px;
     }
     
-    /* ライブ配信インジケーター */
-    .live-indicator {
+    /* YouTubeインジケーター */
+    .youtube-indicator {
         display: inline-block;
         background-color: #ff0000;
         color: white;
@@ -376,13 +387,18 @@ st.markdown("""
         border-radius: 3px;
         font-size: 10px;
         font-weight: bold;
-        animation: pulse 2s infinite;
     }
     
-    @keyframes pulse {
-        0% { opacity: 1; }
-        50% { opacity: 0.7; }
-        100% { opacity: 1; }
+    /* ニコニコ動画インジケーター */
+    .niconico-indicator {
+        display: inline-block;
+        background-color: #252525;
+        color: white;
+        padding: 2px 6px;
+        margin: 1px 2px 1px 0;
+        border-radius: 3px;
+        font-size: 10px;
+        font-weight: bold;
     }
     
     /* サムネイルコンテナの改良（高さ統一版） */
@@ -682,22 +698,12 @@ else:
     cols = st.columns(4)
     
     for idx, row in enumerate(rows):
-        vid, title, category, created_at, youtube_video_id, clip_count, youtube_url = row
+        vid, title, category, created_at, youtube_video_id, clip_count, youtube_url, twitch_url = row
         
         # タイトルを適切な長さに制限
         display_title = title if len(title) <= 45 else title[:45] + "..."
         
         with cols[idx % 4]:
-            # # デバッグモード（管理者のみ）
-            # if st.session_state.is_admin:
-            #     with st.expander(f"🔧 Debug: {display_title}", expanded=False):
-            #         st.write(f"**Video ID:** {youtube_video_id}")
-            #         st.write(f"**YouTube URL:** {youtube_url}")
-            #         st.write(f"**Is Live:** {is_youtube_live_url(youtube_url) if youtube_url else False}")
-            #         if youtube_video_id:
-            #             if st.button(f"サムネイルテスト", key=f"debug_{vid}_{idx}"):
-            #                 display_simple_thumbnail(youtube_video_id, key=f"debug_vid_{vid}")
-            
             # 改良されたサムネイル表示
             display_thumbnail_with_fallback(youtube_video_id, key=f"vid_{vid}_{idx}")
             
@@ -709,22 +715,30 @@ else:
                 <div class="vod-meta">✂️ クリップ: {clip_count}件</div>
             """
             
-            # ライブ配信の判定（URLパターンで判定）
+            # プラットフォーム情報を取得
+            platforms = get_platform_info(youtube_url, twitch_url)
+            
+            # ライブ配信の判定（YouTubeのURLパターンで判定）
             is_live = is_youtube_live_url(youtube_url) if youtube_url else False
             
-            # タグ表示部分（LIVEインジケーターとゲームタグを同じ行に）
-            if category or is_live:
+            # タグ表示部分（プラットフォームインジケーターとゲームタグを同じ行に）
+            if category or platforms or is_live:
                 card_html += '<div class="vod-tags">'
                 
-                # LIVEインジケーターを最初に表示
+                # LIVEインジケーターを最初に表示（YouTube Live判定）
                 if is_live:
-                    card_html += '<span class="live-indicator">🔴 LIVE</span>'
+                    card_html += '<span class="youtube-indicator">▶ YouTube</span>'
+                
+                # その他のプラットフォームインジケーターを表示
+                for platform_id, platform_label in platforms:
+                    if platform_id == 'niconico':
+                        card_html += '<span class="niconico-indicator">📹 ニコニコ</span>'
                 
                 # カテゴリタグの表示
                 if category:
                     tags = [tag.strip() for tag in category.split("|") if tag.strip()]
-                    # LIVEがある場合は1つ、ない場合は2つまで表示
-                    max_tags = 1 if is_live else 2
+                    # プラットフォームまたはLIVEがある場合は1つ、ない場合は2つまで表示
+                    max_tags = 1 if (platforms or is_live) else 2
                     for tag in tags[:max_tags]:
                         card_html += f'<span class="vod-tag">🎮 {tag}</span>'
                     if len(tags) > max_tags:

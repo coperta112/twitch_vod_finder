@@ -564,7 +564,14 @@ if st.session_state.is_admin and st.session_state.edit_mode:
             current_date = datetime.strptime(created_at, "%Y-%m-%d %H:%M:%S").date()
         except:
             current_date = datetime.now().date()
-        new_date = st.date_input("追加日", value=current_date)
+        
+        # 日付入力の制限を解除（min_valueとmax_valueを設定）
+        new_date = st.date_input(
+            "追加日", 
+            value=current_date,
+            min_value=datetime(2000, 1, 1).date(),  # 2000年1月1日から
+            max_value=datetime(2030, 12, 31).date()  # 2030年12月31日まで
+        )
         
         current_category = category or ""
         new_category = st.text_input("ゲームカテゴリ（| で区切って複数指定可能）", value=current_category)
