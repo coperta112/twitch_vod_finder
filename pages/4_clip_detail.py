@@ -3,6 +3,7 @@ import sqlite3
 import sys
 import os
 from datetime import datetime
+from dateutil import parser
 
 # ページ設定
 st.set_page_config(
@@ -302,7 +303,7 @@ if st.session_state.is_admin and st.session_state.is_edit_mode:
         new_title = st.text_input("タイトル", value=title)
         new_url = st.text_input("URL", value=url or "")
         new_thumbnail = st.text_input("サムネイルURL", value=thumbnail_url or "")
-        new_date = st.date_input("作成日", value=datetime.strptime(created_at.split()[0], "%Y-%m-%d").date())
+        new_date = st.date_input("作成日", value=parser.parse(created_at).date())
         
         # VOD紐づけ選択
         st.markdown("#### 🔗 VOD紐づけ")
