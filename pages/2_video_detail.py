@@ -8,6 +8,7 @@ from datetime import datetime
 import uuid
 import re
 import requests
+import streamlit.components.v1 as components
 
 # ページ設定 - デフォルトサイドバーを無効化
 st.set_page_config(
@@ -50,11 +51,10 @@ def is_youtube_live_url(url):
     if not url:
         return False
     
-    # ライブ配信の典型的なURLパターン
     live_patterns = [
-        r'youtube\.com/live/',                    # https://www.youtube.com/live/VIDEO_ID
-        r'youtube\.com/watch\?.*live_stream',     # ライブストリーム関連パラメータ
-        r'youtube\.com/channel/.*/live',          # チャンネルライブページ
+        r'youtube\.com/live/',
+        r'youtube\.com/watch\?.*live_stream',
+        r'youtube\.com/channel/.*/live',
     ]
     
     for pattern in live_patterns:
@@ -63,55 +63,38 @@ def is_youtube_live_url(url):
     
     return False
 
-# YouTubeサムネイル取得の改良版関数
 def get_youtube_thumbnail_urls(video_id):
-    """
-    YouTubeビデオIDから利用可能なサムネイルURLのリストを返す
-    ライブ配信やプレミア公開にも対応した多段階フォールバック
-    """
+    """YouTubeビデオIDから利用可能なサムネイルURLのリストを返す"""
     if not video_id:
         return []
     
     thumbnail_urls = [
-        # 高解像度サムネイル（通常動画用）
-        f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg",  # 1920x1080
-        f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg",      # 480x360
-        f"https://img.youtube.com/vi/{video_id}/mqdefault.jpg",      # 320x180
-        
-        # ライブ配信・プレミア公開用の追加パターン
-        f"https://img.youtube.com/vi/{video_id}/sddefault.jpg",      # 640x480
-        f"https://img.youtube.com/vi/{video_id}/hq720.jpg",          # 720p (一部動画)
-        
-        # 番号付きサムネイル（複数のサムネイルがある場合）
-        f"https://img.youtube.com/vi/{video_id}/1.jpg",              # サムネイル1
-        f"https://img.youtube.com/vi/{video_id}/2.jpg",              # サムネイル2
-        f"https://img.youtube.com/vi/{video_id}/3.jpg",              # サムネイル3
-        
-        # 最後の手段
-        f"https://img.youtube.com/vi/{video_id}/default.jpg"         # 120x90 (必ず存在)
+        f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg",
+        f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg",
+        f"https://img.youtube.com/vi/{video_id}/mqdefault.jpg",
+        f"https://img.youtube.com/vi/{video_id}/sddefault.jpg",
+        f"https://img.youtube.com/vi/{video_id}/hq720.jpg",
+        f"https://img.youtube.com/vi/{video_id}/1.jpg",
+        f"https://img.youtube.com/vi/{video_id}/2.jpg",
+        f"https://img.youtube.com/vi/{video_id}/3.jpg",
+        f"https://img.youtube.com/vi/{video_id}/default.jpg"
     ]
     
     return thumbnail_urls
 
-# サムネイル表示用の改良された関数
 def display_thumbnail_with_fallback(video_id, key=None, container_class="thumbnail-container"):
-    """
-    Streamlit互換のフォールバック機能付きサムネイル表示
-    """
+    """Streamlit互換のフォールバック機能付きサムネイル表示"""
     if not video_id:
         st.markdown(f'<div class="{container_class}"><div class="no-thumbnail">📺 サムネイル画像なし</div></div>', unsafe_allow_html=True)
         return
     
     thumbnail_urls = get_youtube_thumbnail_urls(video_id)
     
-    # 最初に利用可能なサムネイルを見つける
     working_url = None
     for url in thumbnail_urls:
         try:
-            # HEADリクエストで画像の存在を確認（タイムアウト短縮）
             response = requests.head(url, timeout=3)
             if response.status_code == 200:
-                # Content-Typeが画像かチェック
                 content_type = response.headers.get('content-type', '')
                 if 'image' in content_type:
                     working_url = url
@@ -119,9 +102,7 @@ def display_thumbnail_with_fallback(video_id, key=None, container_class="thumbna
         except:
             continue
     
-    # 利用可能なサムネイルを表示
     if working_url:
-        # HTMLで高さを統一して表示
         st.markdown(f'''
         <div class="{container_class}">
             <img 
@@ -132,17 +113,77 @@ def display_thumbnail_with_fallback(video_id, key=None, container_class="thumbna
         </div>
         ''', unsafe_allow_html=True)
     else:
-        # すべてのURLが失敗した場合
         st.markdown(f'<div class="{container_class}"><div class="no-thumbnail">📺 サムネイル読み込みエラー<br>または未対応の動画形式</div></div>', unsafe_allow_html=True)
 
-# 修正されたCSS部分 - クリップレイアウトを横並びに変更
+
+def render_copy_button(url, key_id):
+    """
+    ワンクリックでURLをクリップボードにコピーするボタンを描画する。
+    components.html を使うことでiframe制限を回避し、execCommand('copy') で確実にコピーできる。
+    """
+    safe_url = url.replace("'", "\\'").replace('"', '&quot;')
+    components.html(f"""
+    <style>
+        body {{ margin: 0; padding: 0; }}
+    </style>
+    <button
+        id="copy-btn-{key_id}"
+        style="
+            padding: 0 16px;
+            height: 49px;
+            box-sizing: border-box;
+            background: #f8f9fa;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            color: #555;
+            font-family: sans-serif;
+            transition: all 0.2s;
+            white-space: nowrap;
+            width: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+        "
+        onmouseover="this.style.background='#e8f4f8'; this.style.borderColor='#1f77b4'; this.style.color='#1f77b4';"
+        onmouseout="if(!this.dataset.copied){{this.style.background='#f8f9fa'; this.style.borderColor='#ddd'; this.style.color='#555';}}"
+        onclick="
+            var el = document.createElement('textarea');
+            el.value = '{safe_url}';
+            el.style.position = 'fixed';
+            el.style.opacity = '0';
+            document.body.appendChild(el);
+            el.focus();
+            el.select();
+            document.execCommand('copy');
+            document.body.removeChild(el);
+            this.dataset.copied = '1';
+            this.textContent = '✅ コピーしました！';
+            this.style.background = '#d4edda';
+            this.style.borderColor = '#28a745';
+            this.style.color = '#28a745';
+            var btn = this;
+            setTimeout(function() {{
+                btn.dataset.copied = '';
+                btn.textContent = '📋 URLをコピー';
+                btn.style.background = '#f8f9fa';
+                btn.style.borderColor = '#ddd';
+                btn.style.color = '#555';
+            }}, 2000);
+        "
+    >📋 URLをコピー</button>
+    """, height=49)
+
+
+# CSS
 st.markdown("""
 <style>
     section[data-testid="stSidebar"] .stSelectbox {
         display: none !important;
     }
     
-    /* メインコンテナのリセット */
     .main .block-container {
         padding-top: 0 !important;
         padding-bottom: 1rem !important;
@@ -150,13 +191,12 @@ st.markdown("""
         max-width: 100% !important;
     }
     
-    /* Streamlitの全てのデフォルトマージンを削除 */
     .element-container {
         margin-top: 0 !important;
         padding-top: 0 !important;
     }
     
-    /* サムネイルコンテナ - 詳細ページ用（大きめ） */
+    /* サムネイルコンテナ */
     .thumbnail-container {
         position: relative;
         width: 100%;
@@ -177,7 +217,6 @@ st.markdown("""
         object-fit: cover;
     }
     
-    /* サムネイルがない場合の表示 */
     .no-thumbnail {
         position: absolute;
         top: 0;
@@ -196,7 +235,7 @@ st.markdown("""
         line-height: 1.4;
     }
     
-    /* クリップサムネイル用（小さめ） */
+    /* クリップサムネイル */
     .clip-thumbnail-container {
         position: relative;
         width: 200px;
@@ -262,7 +301,6 @@ st.markdown("""
         font-weight: 500;
     }
     
-    /* ライブ配信インジケーター（詳細ページ用） */
     .live-indicator-large {
         display: inline-block;
         background-color: #ff0000;
@@ -286,10 +324,20 @@ st.markdown("""
         margin: 20px 0;
     }
     
-    .youtube-link {
-        display: block;
-        padding: 14px 18px;
+    .youtube-link-row {
+        display: flex;
+        align-items: stretch;
+        gap: 8px;
         margin: 10px 0;
+    }
+    
+    .youtube-link {
+        flex: 1;
+        display: flex;
+        align-items: center;
+        padding: 0 18px;
+        height: 49px;
+        box-sizing: border-box;
         background-color: #f8f9fa;
         border: 1px solid #ddd;
         border-radius: 8px;
@@ -306,48 +354,7 @@ st.markdown("""
         transform: translateY(-1px);
     }
     
-    .youtube-link-row {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        margin: 10px 0;
-    }
-
-    .youtube-link-row .youtube-link {
-        flex: 1;
-        margin: 0;
-    }
-
-    .copy-btn {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        padding: 14px 14px;
-        background-color: #f8f9fa;
-        border: 1px solid #ddd;
-        border-radius: 8px;
-        cursor: pointer;
-        font-size: 16px;
-        color: #555;
-        transition: all 0.2s ease;
-        white-space: nowrap;
-        flex-shrink: 0;
-        user-select: none;
-    }
-
-    .copy-btn:hover {
-        background-color: #e8f4f8;
-        border-color: #1f77b4;
-        color: #1f77b4;
-    }
-
-    .copy-btn.copied {
-        background-color: #d4edda;
-        border-color: #28a745;
-        color: #28a745;
-    }
-    
-    /* クリップサイドバー */
+    /* クリップカード */
     .clips-header {
         font-size: 22px;
         font-weight: bold;
@@ -357,7 +364,6 @@ st.markdown("""
         padding-bottom: 10px;
     }
     
-    /* クリップカード - 横並びレイアウトに変更（背景とボーダーを削除） */
     .clip-card {
         display: flex;
         flex-direction: row;
@@ -368,7 +374,6 @@ st.markdown("""
         position: relative;
     }
     
-    /* クリップカードの上に表示される棒線 */
     .clip-card::before {
         content: '';
         position: absolute;
@@ -415,12 +420,7 @@ st.markdown("""
         margin-top: auto;
     }
     
-    /* ヘッダー部分 */
-    .back-button {
-        margin-bottom: 20px;
-    }
-    
-    /* 編集モード用スタイル */
+    /* 編集モード */
     .edit-mode-panel {
         background-color: #fff3cd;
         border: 1px solid #ffeaa7;
@@ -458,7 +458,6 @@ st.markdown("""
         margin-top: 40px;
     }
     
-    /* レスポンシブ対応 */
     @media (max-width: 1200px) {
         .custom-video-layout {
             flex-direction: column;
@@ -483,10 +482,10 @@ if "is_admin" not in st.session_state:
 if "edit_mode" not in st.session_state:
     st.session_state.edit_mode = False
 
-# session_stateからVOD IDを取得（1_videos.pyからの遷移）
+# session_stateからVOD IDを取得
 vod_id = st.session_state.get('selected_vod_id')
 
-# フォールバック：クエリパラメータからも取得を試行
+# フォールバック：クエリパラメータからも取得
 if not vod_id:
     vod_id = st.query_params.get("vod_id")
 
@@ -496,7 +495,7 @@ if not vod_id:
         st.switch_page("pages/1_videos.py")
     st.stop()
 
-# --- DB接続とデータ取得 ---
+# DB接続とデータ取得
 conn = sqlite3.connect("vods.db", check_same_thread=False)
 c = conn.cursor()
 
@@ -511,7 +510,7 @@ if not vod:
 
 vod_id, title, category, created_at = vod
 
-# YouTubeリンクを取得（video_idも含む）
+# YouTubeリンクを取得
 c.execute("SELECT id, url, title, video_id FROM youtube_links WHERE vod_id = ? ORDER BY id", (vod_id,))
 youtube_links = c.fetchall()
 
@@ -519,7 +518,7 @@ youtube_links = c.fetchall()
 main_video_id = None
 main_youtube_url = None
 for link in youtube_links:
-    if link[3]:  # video_idが存在する場合
+    if link[3]:
         main_video_id = link[3]
         main_youtube_url = link[1]
         break
@@ -531,7 +530,6 @@ if not main_video_id and youtube_links:
         if extracted_id:
             main_video_id = extracted_id
             main_youtube_url = link[1]
-            # データベースも更新
             c.execute("UPDATE youtube_links SET video_id = ? WHERE id = ?", (extracted_id, link[0]))
             conn.commit()
             break
@@ -546,7 +544,7 @@ c.execute("""
 """, (vod_id,))
 clips = c.fetchall()
 
-conn.close()  # 一旦閉じる（必要時再接続）
+conn.close()
 
 # --- 削除処理関数群 ---
 
@@ -569,7 +567,6 @@ def delete_youtube_link(link_id):
     st.success("YouTubeリンクを削除しました。")
     st.rerun()
 
-# --- 編集モード切替関数 ---
 def toggle_edit_mode():
     st.session_state.edit_mode = not st.session_state.edit_mode
 
@@ -606,12 +603,11 @@ if st.session_state.is_admin and st.session_state.edit_mode:
         except:
             current_date = datetime.now().date()
         
-        # 日付入力の制限を解除（min_valueとmax_valueを設定）
         new_date = st.date_input(
             "追加日", 
             value=current_date,
-            min_value=datetime(2000, 1, 1).date(),  # 2000年1月1日から
-            max_value=datetime(2030, 12, 31).date()  # 2030年12月31日まで
+            min_value=datetime(2000, 1, 1).date(),
+            max_value=datetime(2030, 12, 31).date()
         )
         
         current_category = category or ""
@@ -635,7 +631,6 @@ if st.session_state.is_admin and st.session_state.edit_mode:
     # YouTubeリンク管理
     st.markdown("### 🔗 YouTubeリンク管理")
     
-    # 新しいリンク追加
     with st.expander("➕ 新しいYouTubeリンクを追加", expanded=False):
         with st.form("add_youtube_link"):
             new_url = st.text_input("YouTube URL", placeholder="https://www.youtube.com/watch?v=...")
@@ -658,7 +653,6 @@ if st.session_state.is_admin and st.session_state.edit_mode:
                 else:
                     st.warning("⚠️ YouTubeのURLを入力してください。")
 
-    # 既存リンクの削除ボタン
     if youtube_links:
         st.markdown("#### 🗑️ 既存リンクの削除")
         for link_id, url, link_title, video_id in youtube_links:
@@ -675,7 +669,6 @@ if st.session_state.is_admin and st.session_state.edit_mode:
                     args=(link_id,)
                 )
 
-    # 危険ゾーン（VOD削除）
     with st.expander("⚠️ 危険ゾーン - VOD削除", expanded=False):
         st.markdown('<div class="danger-zone">', unsafe_allow_html=True)
         st.warning("⚠️ この操作は取り消せません。VODとすべての関連データが削除されます。")
@@ -690,55 +683,39 @@ if st.session_state.is_admin and st.session_state.edit_mode:
         st.markdown('</div>', unsafe_allow_html=True)
 
 else:
-    # 通常の表示モード - Streamlitのネイティブなカラムレイアウトを使用
+    # 通常の表示モード
     col1, col2 = st.columns([3, 2])
     
     with col1:
-        # 改良されたサムネイル表示
+        # サムネイル表示
         display_thumbnail_with_fallback(main_video_id, key=f"main_vid_{vod_id}")
         
         st.markdown(f'<div class="video-title">📺 {title}</div>', unsafe_allow_html=True)
         st.markdown(f'<div class="video-date">📅 追加日: {created_at}</div>', unsafe_allow_html=True)
         
+        # ★ YouTubeリンク + ワンクリックコピーボタン ★
         if youtube_links:
             st.markdown('<div class="youtube-links">', unsafe_allow_html=True)
             for idx, (link_id, url, yt_title, video_id) in enumerate(youtube_links, 1):
                 link_label = yt_title if yt_title else f"YouTubeリンク#{idx}"
-                # URLをJavaScript内で安全に使うためエスケープ
-                safe_url = url.replace("'", "\\'")
-                st.markdown(f'''
-                <div class="youtube-link-row">
-                    <a href="{url}" target="_blank" class="youtube-link">▶️ {link_label}</a>
-                    <button
-                        class="copy-btn"
-                        title="URLをコピー"
-                        onclick="
-                            navigator.clipboard.writeText('{safe_url}').then(() => {{
-                                this.textContent = '✅';
-                                this.classList.add('copied');
-                                setTimeout(() => {{
-                                    this.textContent = '📋';
-                                    this.classList.remove('copied');
-                                }}, 2000);
-                            }}).catch(() => {{
-                                this.textContent = '❌';
-                                setTimeout(() => {{ this.textContent = '📋'; }}, 2000);
-                            }});
-                        "
-                    >📋</button>
-                </div>
-                ''', unsafe_allow_html=True)
+                # リンクボタンとコピーボタンを横並びに
+                col_link, col_copy = st.columns([4, 1])
+                with col_link:
+                    st.markdown(
+                        f'<a href="{url}" target="_blank" class="youtube-link">▶️ {link_label}</a>',
+                        unsafe_allow_html=True
+                    )
+                with col_copy:
+                    render_copy_button(url, key_id=f"{vod_id}_{link_id}_{idx}")
             st.markdown('</div>', unsafe_allow_html=True)
         
-        # カテゴリタグとライブインジケーターの表示
+        # カテゴリタグとライブインジケーター
         if category or (main_youtube_url and is_youtube_live_url(main_youtube_url)):
             st.markdown('<div class="video-tags">', unsafe_allow_html=True)
             
-            # ライブ配信インジケーター
             if main_youtube_url and is_youtube_live_url(main_youtube_url):
                 st.markdown('<span class="live-indicator-large">🔴 LIVE配信</span>', unsafe_allow_html=True)
             
-            # カテゴリタグ
             if category:
                 tags = [tag.strip() for tag in category.split("|") if tag.strip()]
                 tags_html = ""
@@ -760,33 +737,25 @@ else:
                 if fav_key not in st.session_state:
                     st.session_state[fav_key] = False
                 
-                # 横並びレイアウトのクリップカード
                 st.markdown('<div class="clip-card">', unsafe_allow_html=True)
                 
-                # カード内のレイアウト
                 col_thumb, col_info = st.columns([1, 2])
                 
                 with col_thumb:
-                    # クリップサムネイル表示（改良版）
                     clip_video_id = None
                     
-                    # クリップのサムネイルURLまたはvideo_idを決定
                     if clip_thumbnail_url and clip_thumbnail_url.strip():
-                        # カスタムサムネイルがある場合はそれを使用
                         st.markdown(f'''
                         <div class="clip-thumbnail-container">
                             <img src="{clip_thumbnail_url}" alt="Clip Thumbnail" />
                         </div>
                         ''', unsafe_allow_html=True)
                     elif clip_youtube_video_id and clip_youtube_video_id.strip():
-                        # YouTubeのvideo_idがある場合はYouTubeサムネイルを使用
                         clip_video_id = clip_youtube_video_id
                         display_thumbnail_with_fallback(clip_video_id, key=f"clip_{clip_id}", container_class="clip-thumbnail-container")
                     elif main_video_id:
-                        # メインのvideo_idを使用してYouTubeサムネイルを表示
                         display_thumbnail_with_fallback(main_video_id, key=f"clip_main_{clip_id}", container_class="clip-thumbnail-container")
                     else:
-                        # サムネイルがない場合
                         st.markdown('''
                         <div class="clip-thumbnail-container">
                             <div class="no-thumbnail">📹</div>
@@ -794,17 +763,14 @@ else:
                         ''', unsafe_allow_html=True)
                 
                 with col_info:
-                    # タイトル
                     st.markdown(f'<div class="clip-title">{clip_title}</div>', unsafe_allow_html=True)
                     
-                    # 日付をフォーマット
                     try:
                         formatted_date = datetime.strptime(clip_created_at, "%Y-%m-%d %H:%M:%S").strftime("%Y-%m-%d")
                     except:
                         formatted_date = clip_created_at
                     st.markdown(f'<div class="clip-meta">追加日: {formatted_date}</div>', unsafe_allow_html=True)
                     
-                    # アクションボタン
                     col_fav, col_detail = st.columns([1, 2])
                     
                     with col_fav:
@@ -826,7 +792,7 @@ else:
                             st.session_state['selected_clip_id'] = clip_id
                             st.switch_page("pages/4_clip_detail.py")
                 
-                st.markdown('</div>', unsafe_allow_html=True)  # clip-card終了
+                st.markdown('</div>', unsafe_allow_html=True)
         else:
             st.info("📝 このVODに関連するクリップはまだありません")
         
