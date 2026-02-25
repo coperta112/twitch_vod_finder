@@ -306,6 +306,47 @@ st.markdown("""
         transform: translateY(-1px);
     }
     
+    .youtube-link-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 10px 0;
+    }
+
+    .youtube-link-row .youtube-link {
+        flex: 1;
+        margin: 0;
+    }
+
+    .copy-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 14px 14px;
+        background-color: #f8f9fa;
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        cursor: pointer;
+        font-size: 16px;
+        color: #555;
+        transition: all 0.2s ease;
+        white-space: nowrap;
+        flex-shrink: 0;
+        user-select: none;
+    }
+
+    .copy-btn:hover {
+        background-color: #e8f4f8;
+        border-color: #1f77b4;
+        color: #1f77b4;
+    }
+
+    .copy-btn.copied {
+        background-color: #d4edda;
+        border-color: #28a745;
+        color: #28a745;
+    }
+    
     /* クリップサイドバー */
     .clips-header {
         font-size: 22px;
@@ -663,7 +704,30 @@ else:
             st.markdown('<div class="youtube-links">', unsafe_allow_html=True)
             for idx, (link_id, url, yt_title, video_id) in enumerate(youtube_links, 1):
                 link_label = yt_title if yt_title else f"YouTubeリンク#{idx}"
-                st.markdown(f'<a href="{url}" target="_blank" class="youtube-link">▶️ {link_label}</a>', unsafe_allow_html=True)
+                # URLをJavaScript内で安全に使うためエスケープ
+                safe_url = url.replace("'", "\\'")
+                st.markdown(f'''
+                <div class="youtube-link-row">
+                    <a href="{url}" target="_blank" class="youtube-link">▶️ {link_label}</a>
+                    <button
+                        class="copy-btn"
+                        title="URLをコピー"
+                        onclick="
+                            navigator.clipboard.writeText('{safe_url}').then(() => {{
+                                this.textContent = '✅';
+                                this.classList.add('copied');
+                                setTimeout(() => {{
+                                    this.textContent = '📋';
+                                    this.classList.remove('copied');
+                                }}, 2000);
+                            }}).catch(() => {{
+                                this.textContent = '❌';
+                                setTimeout(() => {{ this.textContent = '📋'; }}, 2000);
+                            }});
+                        "
+                    >📋</button>
+                </div>
+                ''', unsafe_allow_html=True)
             st.markdown('</div>', unsafe_allow_html=True)
         
         # カテゴリタグとライブインジケーターの表示
